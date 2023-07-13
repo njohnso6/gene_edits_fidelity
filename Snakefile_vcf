@@ -1,0 +1,44 @@
+
+CHROMS = ['chr1', 'chr2', 'chr3', 'chr4', 'chr5', 'chr5', 'chr7', 'chr8', 'chr9', 'chr10', 
+            'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18',
+            'chr19', 'chr20', 'chr21', 'chr22', 'chrX'] # No Y for whatever reason
+
+file_dir = "/data/CARDPB/data/NABEC/ILM_WGS/"
+
+rule all:
+    input: 
+        expand("genotypes/nabec_{chrom}_genotypes.tsv", chrom=CHROMS)
+
+rule gunzip:
+    input: file_dir + "nabec.freeze9.{chrom}.gtonly.vcf.gz"
+    output:
+        temp("vcf_gz/{chrom}.vcf")
+    resources:
+        mem_mb=15360
+    shell:
+        """
+        mkdir -p vcf_gz
+        cp {input} vcf_gz/{wildcards.chrom}.vcf.gz
+        gunzip vcf_gz/{wildcards.chrom}.vcf.gz
+        """
+
+rule  make_vcf_readable:
+    input: 
+        "vcf_gz/{chrom}.vcf"
+    output:
+        otsv = "genotypes/nabec_{chrom}_genotypes.tsv",
+        t1 = temp("genotypes/nabec_temp_{chrom}.vcf"),
+        t2 = temp("genotypes/nabec_temp_2_{chrom}.vcf"),
+    resources:
+        mem_mb=25600
+    wildcard_constraints:
+        chrom="\w+"
+    shell:
+        """
+        mkdir -p genotypes
+        cp {input} genotypes/
+        /data/johnsonnicl/sctype_env_2/bin/vcfsnps <{input} > {output.t1} # Only so SNPS
+        /data/johnsonnicl/sctype_env_2/bin/vcfgeno2alleles <{output.t1} > {output.t2} # Show actual alleles
+        /data/johnsonnicl/sctype_env_2/bin/vcfclearinfo <{output.t2} > {output.t1} # clear info field
+        /data/johnsonnicl/sctype_env_2/bin/vcf2tsv -g {output.t1} > {output.otsv} # Do one line per sample
+        """
