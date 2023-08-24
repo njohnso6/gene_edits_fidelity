@@ -1,0 +1,143 @@
+import glob
+import pandas as pd
+import pdb
+import numpy as np
+
+import os
+
+CHROMS = ['1', '2', '', '4', '5', '5', '7', '8', '9', '10', 
+            '11', '12', '13', '14', '15', '16', '17', '18',
+            '19', '20', '21', '22'] 
+            # No Y for whatever reason
+
+file_dir = "/data/CARD/AD/AMP_AD/jointGenotypingROSMAPMayoRNAseqMSBB/"
+rna_dir = "/data/CARD_AA/data/2023_08_08_ROSMAP_BAMS/"
+
+# Make a lookup table to find the relevant WGS sample to match with the RNA one
+lookup = pd.read_csv('/data/CARD/AD/AMP_AD/jointGenotypingROSMAPMayoRNAseqMSBB/threeCohorts.csv')[['wgs_id','rna_id','cohort']].dropna()
+lookup_by_rna = lookup.set_index("rna_id")
+lookup_dict = lookup_by_rna['wgs_id'].to_dict()
+
+# Lookup function
+def get_wgs_equiv(wildcards):
+    return lookup_dict[wildcards.sample]
+
+def get_rna_dir(wildcards):
+    cohort = lookup_by_rna.loc[wildcards.sample, 'cohort']
+
+
+
+pre_filt_sample_names = glob.glob(pathname="*Aligned.out.bam", root_dir=rna_dir)
+SAMPLES = list(map(lambda x: x.split("A")[0], pre_filt_sample_names))
+rna_set = set(lookup['rna_id'])
+SAMPLES = [sample for sample in SAMPLES if sample in rna_set] # NOT ALL ORIGINAL SAMPLES in SAMPLES
+
+localrules: all
+
+rule all:
+    input: 
+        expand("fidelity_counts/{sample}/{sample}_chr{chrom}_fidelity_counts.tsv", sample=SAMPLES, chrom=CHROMS),
+
+rule ramdisk:
+    input: 
+        vcf_tbi = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz.tbi",
+        vcf = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz",
+        vcf_anno_tbi = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz.tbi",
+        vcf_anno = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz",
+    output:
+        service("vcf_tbi_{chrom}"),
+        vcf_tbi="/dev/shm/chr{chrom}.vcf.gz.tbi",
+        vcf="/dev/shm/chr{chrom}.vcf.gz",
+        vcf_anno_tbi="/dev/shm/chr{chrom}.annotate.vcf.gz.tbi",
+        vcf_anno="/dev/shm/chr{chrom}/annotated.vcf.gz"
+    resources:
+        mem_mb=102400
+    shell:
+        """
+        cp {input.vcf_tbi} /dev/shm{wildcards.chrom}.vcf.gz.tbi
+        cp {input.vcf} /dev/shm/chr{wildcards.chrom}.vcf.gz
+        cp {input.vcf_anno_tbi} /dev/shm/chr{wildcards.chrom}.annotated.vcf.gz.tbi
+        cp {input.vcf_anno} /dev/shm/chr{wildcards.chrom}.annotated.vcf.gz
+        """
+
+rule  make_vcf_readable:
+    input: 
+        ramdisk_file = "vcf_tbi_{chrom}",
+        r_vcf_tbi="/dev/shm/chr{chrom}.vcf.gz.tbi",
+        r_vcf="/dev/shm/chr{chrom}.vcf.gz.tbi",
+        r_vcf_anno_tbi="/dev/shm/chr{chrom}.annotated.vcf.gz.tbi",
+        r_vcf_anno="/dev/shm/chr{chrom}.vcf.gz"
+
+    output:
+        otsv = "genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
+    resources:
+        mem_mb=25600, disk_mb=307200
+    wildcard_constraints:
+        chrom="\w+"
+    params:
+        t1 = "rosmap_temp_chr{chrom}.vcf",
+        t2 = "rosmap_temp_2_chr{chrom}.vcf",
+    envmodules: "bcftools"
+    shell:
+        """
+        mkdir -p genotypes
+        bcftools annotate -a {input.r_vcf_anno} -c ANN -o $TMPDIR/{params.t1}
+        /data/johnsonnicl/sctype_env_2/bin/vcfsnps <$TMPDIR/{params.t1} > $TMPDIR/{params.t2} # Only so SNPS
+        bcftools query --format %CHROM\t%POS\t%ID\t%REF\t%ALT\t%QUAL\t%INFO/ANN\t[%TGT]\n $TMPDIR/{params.t2} \
+                        -o genotypes/ROSMAP_{wildcards.chrom}_genotype.tsv
+        rm $TMPDIR/{params.t1}
+        rm $TMPDIR/{params.t2}
+        """
+
+# presumably this will work because no matter the quality cutoff 
+# the arrays are always the same length, so it must be bassed on the total length
+# of the contig. Unfortunatley, they don't always line up with the vcfs. Presumably
+
+rule prepare_mpileup:
+    input:
+        bam=rna_dir + "{sample}Aligned.out.bam"
+    output:
+        bam=rna_dir + "{sample}Aligned_sorted.out.bam",
+        bai=rna_dir + "{sample}Aligned_sorted.out.bam.bai"
+    envmodules: "samtools"
+    threads: 8
+    resources:
+        mem_mb=15360
+    shell:
+        """
+        samtools sort {input.bam} --threads={threads} -o {output.bam}
+        samtools index {output.bam} -@ {threads}
+        """
+
+
+rule mpileup:
+    input:
+        bam=rna_dir + "{sample}Aligned_sorted.out.bam",
+        bai=rna_dir + "{sample}Aligned_sorted.out.bam.bai"
+    output:
+        out="rna_bases/{sample}/{sample}_chr{chrom}.tsv"
+    resources:
+        mem_mb=61440, disk_mb=1024, runtime=720
+    params: 
+        file_dir = ''
+    script:
+        "scripts/base_count_script.py"
+
+
+# Need to finish
+
+rule make_fidelity_counts:
+    input:
+        rna = "rna_bases/{sample}/{sample}_chr{chrom}.tsv",
+        dna = "genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
+    output:
+        "fidelity_counts/{sample}/{sample}_chr{chrom}_fidelity_counts.tsv"
+    log:
+        "logs/{sample}_chr{chrom}_fidelity_counts.log"
+    params: 
+        dna_sample=get_wgs_equiv
+    resources:
+        mem_mb=18432, slurm_partition="quick,norm"
+    script:
+        "scripts/combine_data.py"
+
