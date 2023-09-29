@@ -5,15 +5,19 @@ import numpy as np
 
 import os
 
-CHROMS = ['1', '2', '3', '4', '5', '5', '7', '8', '9', '10', 
+CHROMS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 
             '11', '12', '13', '14', '15', '16', '17', '18',
             '19', '20', '21', '22'] 
             # No Y for whatever reason
 
 file_dir = "/data/CARD/AD/AMP_AD/jointGenotypingROSMAPMayoRNAseqMSBB/"
 rna_dir = "/data/CARD_AA/data/2023_08_08_ROSMAP_BAMS/"
+temp_pb = '/data/CARDPB/users/johnsonnicl/vcf_liftover/'
 
 # Make a lookup table to find the relevant WGS sample to match with the RNA one
+# In this snakefile, addressed by RNA_ID first. Make_fidelity_counts gets handed
+# the WGS equivalent to bridge the gap. The ID correspondence is in the metadata table
+# below called lookup.
 lookup = pd.read_csv('/data/CARD/AD/AMP_AD/jointGenotypingROSMAPMayoRNAseqMSBB/threeCohorts.csv')[['wgs_id','rna_id','cohort']].dropna()
 lookup_by_rna = lookup.set_index("rna_id")
 lookup_dict = lookup_by_rna['wgs_id'].to_dict()
@@ -31,6 +35,10 @@ pre_filt_sample_names = glob.glob(pathname="*Aligned.out.bam", root_dir=rna_dir)
 SAMPLES = list(map(lambda x: x.split("A")[0], pre_filt_sample_names))
 rna_set = set(lookup['rna_id'])
 SAMPLES = [sample for sample in SAMPLES if sample in rna_set] # NOT ALL ORIGINAL SAMPLES in SAMPLES
+
+# TESTING
+SAMPLES = "554_120517"
+CHROMS = CHROMS[1]
 
 localrules: all
 
@@ -51,7 +59,7 @@ rule all:
 #        vcf_anno_tbi="/dev/shm/chr{chrom}.annotate.vcf.gz.tbi",
 #        vcf_anno="/dev/shm/chr{chrom}/annotated.vcf.gz"
 #    resources:
-#        mem_mb=102400
+#        mem_mb=102400, runtime=
 #    shell:
 #        """
 #        cp {input.vcf_tbi} /dev/shm{wildcards.chrom}.vcf.gz.tbi
@@ -59,13 +67,49 @@ rule all:
 #        cp {input.vcf_anno_tbi} /dev/shm/chr{wildcards.chrom}.annotated.vcf.gz.tbi
 #        cp {input.vcf_anno} /dev/shm/chr{wildcards.chrom}.annotated.vcf.gz
 #        """
+#
+
+rule liftover_vcf:
+    input:
+        ref='/fdb/bwa/indexes/hg38.fa',
+        vcf_in= file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz",
+        vcf_anno_in = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz",
+    output:
+        vcf_out=temp_pb+"NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz",
+        vcf_anno_out = temp_pb+"NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz",
+        vcf_out_ind = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz.tbi",
+        vcf_anno_out_ind = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz.tbi",
+    envmodules: "crossmap", "bcftools"
+    resources:
+        mem_mb=61440, disk_mb=307200, runtime=720
+    shell:
+        """
+        if [ ! -f 'hg19ToHg38.over.chain' ]; then
+            wget https://hgdownload.cse.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
+            gunzip hg19ToHg38.over.chain.gz
+        fi
+
+        module load crossmap
+        module load bcftools
+        
+        crossmap vcf hg19ToHg38.over.chain {input.vcf_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf.out | bgzip
+        tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf.out.gz
+        mv $TMPDIR/{wildcards.chrom}_vcf.out.gz {output.vcf_out}
+        mv $TMPDIR/{wildcards.chrom}_vcf.out.gz.tbi {output.vcf_out_ind}
+
+        crossmap vcf hg19ToHg38.over.chain {input.vcf_anno_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf_anno.out | bgzip
+        tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz
+        mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz {output.vcf_anno_out}
+        mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz.tbi {output.vcf_anno_out_ind}
+        """
+
 
 rule  make_vcf_readable:
     input: 
-        vcf_tbi = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz.tbi",
-        vcf = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz",
-        vcf_anno_tbi = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz.tbi",
-        vcf_anno = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz",
+        vcf_tbi = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz.tbi",
+        vcf = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz",
+        vcf_anno_tbi = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz.tbi",
+        vcf_anno = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz",
        # ramdisk_file = "vcf_tbi_{chrom}",
        # r_vcf_tbi="/dev/shm/chr{chrom}.vcf.gz.tbi",
        # r_vcf="/dev/shm/chr{chrom}.vcf.gz.tbi",
@@ -73,10 +117,9 @@ rule  make_vcf_readable:
        # r_vcf_anno="/dev/shm/chr{chrom}.vcf.gz"
 
     output:
-        otsv = "genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
+        otsv = "/data/CARDPB/users/johnsonnicl/genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
     resources:
-        mem_mb=25600, disk_mb=512000,runtime=480, slurm_partition="norm"
-        threads=6
+        mem_mb=25600, disk_mb=430080,runtime=1680, slurm_partition="norm"
     wildcard_constraints:
         chrom="\w+"
     params:
@@ -88,8 +131,8 @@ rule  make_vcf_readable:
         mkdir -p genotypes
         bcftools annotate -a {input.vcf_anno} -c ANN -o $TMPDIR/{params.t1} {input.vcf}
         /data/johnsonnicl/sctype_env_2/bin/vcfsnps <$TMPDIR/{params.t1} > $TMPDIR/{params.t2}
-        /data/johnsonnicl/sctype_env_2/bin/vcfgeno2alleles <$TMPDIR/{params.t2} > $TMPDIR/{params.t1}
-        /data/johnsonnicl/sctype_env_2/bin/vcf2tsv -g $TMPDIR/{params.t1} > {output.otsv}
+        bcftools query -H --format "%CHROM\t%POS\t%ID\t%REF\t%ALT\t%QUAL\t%INFO/ANN\t[%TGT\t]\n" $TMPDIR/{params.t2} \
+                        -o {output.otsv}
         rm $TMPDIR/{params.t1}
         rm $TMPDIR/{params.t2}
         """
@@ -123,6 +166,7 @@ rule mpileup:
         out=temp("/data/CARDPB/users/johnsonnicl/{sample}/{sample}_chr{chrom}.tsv")
     resources:
         mem_mb=61440, disk_mb=1024, runtime=720
+    group: "vcf_consuming_group"
     params: 
         file_dir = '',
         chrom = "chr{chrom}"
@@ -134,15 +178,17 @@ rule mpileup:
 rule make_fidelity_counts:
     input:
         rna = "/data/CARDPB/users/johnsonnicl/{sample}/{sample}_chr{chrom}.tsv",
-        dna = "genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
+        dna = "/data/CARDPB/users/johnsonnicl/genotypes/ROSMAP_chr{chrom}_genotypes.tsv"
     output:
         "fidelity_counts/ROSMAP/{sample}/{sample}_chr{chrom}_fidelity_counts.tsv"
+    group:
+        "vcf_consuming_group"
     log:
         "logs/{sample}_chr{chrom}_fidelity_counts.log"
     params: 
         dna_sample=get_wgs_equiv
     resources:
-        mem_mb=18432, slurm_partition="norm",runtime=480
+        mem_mb=18432, runtime=480
     script:
         "scripts/combine_data_ROSMAP.py"
 
