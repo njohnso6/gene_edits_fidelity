@@ -38,7 +38,7 @@ SAMPLES = [sample for sample in SAMPLES if sample in rna_set] # NOT ALL ORIGINAL
 
 # TESTING
 SAMPLES = "554_120517"
-CHROMS = CHROMS[1]
+CHROMS = 21
 
 localrules: all
 
@@ -73,15 +73,16 @@ rule liftover_vcf:
     input:
         ref='/fdb/bwa/indexes/hg38.fa',
         vcf_in= file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.vcf.gz",
-        vcf_anno_in = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz",
+        #vcf_anno_in = file_dir + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants.annotated.vcf.gz",
     output:
         vcf_out=temp_pb+"NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz",
-        vcf_anno_out = temp_pb+"NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz",
+        #vcf_anno_out = temp_pb+"NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz",
         vcf_out_ind = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.vcf.gz.tbi",
-        vcf_anno_out_ind = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz.tbi",
+        #vcf_anno_out_ind = temp_pb + "NIA_JG_1898_samples_GRM_WGS_b37_JointAnalysis01_2017-12-08_{chrom}.recalibrated_variants_hg38.annotated.vcf.gz.tbi",
     envmodules: "crossmap", "bcftools"
     resources:
-        mem_mb=61440, disk_mb=307200, runtime=720
+        mem_mb=15360, disk_mb=307200, runtime=720
+    threads: 4
     shell:
         """
         if [ ! -f 'hg19ToHg38.over.chain' ]; then
@@ -92,15 +93,21 @@ rule liftover_vcf:
         module load crossmap
         module load bcftools
         
-        crossmap vcf hg19ToHg38.over.chain {input.vcf_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf.out | bgzip
-        tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf.out.gz
-        mv $TMPDIR/{wildcards.chrom}_vcf.out.gz {output.vcf_out}
-        mv $TMPDIR/{wildcards.chrom}_vcf.out.gz.tbi {output.vcf_out_ind}
+        crossmap vcf hg19ToHg38.over.chain {input.vcf_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf.out
+        bcftools sort $TMPDIR/{wildcards.chrom}_vcf.out -o $TMPDIR/{wildcards.chrom}_vcf.out.sorted
+        bgzip --threads 4 $TMPDIR/{wildcards.chrom}_vcf.out.sorted
+        tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf.out.sorted.gz
+        mv $TMPDIR/{wildcards.chrom}_vcf.out.sorted.gz {output.vcf_out}
+        mv $TMPDIR/{wildcards.chrom}_vcf.out.sorted.gz.tbi {output.vcf_out_ind}
+        rm $TMPDIR/{wildcards.chrom}_vcf.out.unmap
 
-        crossmap vcf hg19ToHg38.over.chain {input.vcf_anno_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf_anno.out | bgzip
-        tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz
-        mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz {output.vcf_anno_out}
-        mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.gz.tbi {output.vcf_anno_out_ind}
+      #  crossmap vcf hg19ToHg38.over.chain {input.vcf_anno_in} {input.ref} $TMPDIR/{wildcards.chrom}_vcf_anno.out
+      #  bcftools sort $TMPDIR/{wildcards.chrom}_vcf_anno.out -o $TMPDIR/{wildcards.chrom}_vcf_anno.out.sorted
+      #  bgzip --threads 4 $TMPDIR/{wildcards.chrom}_vcf_anno.out.sorted
+      #  tabix -p vcf $TMPDIR/{wildcards.chrom}_vcf_anno.out.sorted.gz
+      #  mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.sorted.gz {output.vcf_anno_out}
+      #  mv $TMPDIR/{wildcards.chrom}_vcf_anno.out.sorted.gz.tbi {output.vcf_anno_out_ind}
+      #  rm $TMPDIR/{wildcards.chrom}_vcf_anno.out.unmap
         """
 
 
@@ -163,7 +170,7 @@ rule mpileup:
         bam=rna_dir + "{sample}Aligned_sorted.out.bam",
         bai=rna_dir + "{sample}Aligned_sorted.out.bam.bai"
     output:
-        out=temp("/data/CARDPB/users/johnsonnicl/{sample}/{sample}_chr{chrom}.tsv")
+        out="/data/CARDPB/users/johnsonnicl/{sample}/{sample}_chr{chrom}.tsv"
     resources:
         mem_mb=61440, disk_mb=1024, runtime=720
     group: "vcf_consuming_group"
